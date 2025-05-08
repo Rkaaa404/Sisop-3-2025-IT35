@@ -651,3 +651,156 @@ if (strcmp(player->weapon.name, shop[4].name) == 0){
 ### Error Handling   
 Pada tiap fungsi yang menerima input, serta pada pengaturan koneksi, penghubungan client dan server telah terdapat pesan error, dan penanganan yang diberlakukan sesuai kasus
 ### Nomor 4 (Rayka)
+#### A.
+```c
+// system.c
+    key_t key = get_system_key();
+    int shmid = shmget(key, sizeof(struct SystemData), IPC_CREAT | 0666);
+    struct SystemData *sys_data = shmat(shmid, NULL, 0);
+    srand(time(NULL));
+
+// hunter.c:
+    srand(getpid());
+    key_t key = get_system_key();
+    int sys_id = shmget(key, sizeof(struct SystemData), 0666);
+```
+Menggunakan shared memory untuk berbagi memory dengan user, dimana shmget digunakan untuk membuat atau mengakses segment shared memory
+#### B.
+```c
+int register_or_login(struct SystemData *sys_data, struct Hunter **my_hunter) {
+    char uname[50];
+    printf("Masukkan username: ");
+    scanf("%s", uname);
+
+    for (int i = 0; i < sys_data->num_hunters; i++) {
+        if (strcmp(sys_data->hunters[i].username, uname) == 0) {
+            int id = shmget(sys_data->hunters[i].shm_key, sizeof(struct Hunter), 0666);
+            *my_hunter = shmat(id, NULL, 0);
+            printf("Login berhasil.\n");
+            return 1;
+        }
+    }
+
+    if (sys_data->num_hunters >= MAX_HUNTERS) return 0;
+
+    struct Hunter new_hunter;
+    strcpy(new_hunter.username, uname);
+    new_hunter.level = 1;
+    new_hunter.exp = 0;
+    new_hunter.atk = 10;
+    new_hunter.hp = 100;
+    new_hunter.def = 5;
+    new_hunter.banned = 0;
+    new_hunter.shm_key = ftok("/tmp", (rand() % 100) + 101);
+
+    int id = shmget(new_hunter.shm_key, sizeof(struct Hunter), IPC_CREAT | 0666);
+    *my_hunter = shmat(id, NULL, 0);
+    memcpy(*my_hunter, &new_hunter, sizeof(struct Hunter));
+    sys_data->hunters[sys_data->num_hunters++] = new_hunter;
+    printf("Registrasi berhasil.\n");
+    return 1;
+}
+```
+Menggunakan satu fungsi yang berguna sebagai register dan login, dimana jika data username belum ada maka akan diregister, jika sudah ada maka akan menuju Hunter System Menu
+
+#### D.
+```c
+void generate_random_dungeon(struct SystemData *sys_data) {
+    if (sys_data->num_dungeons >= MAX_DUNGEONS) return;
+
+    const char *dungeon_names[] = {
+        "Double Dungeon",
+        "Demon Castle",
+        "Pyramid Dungeon",
+        "Red Gate Dungeon",
+        "Hunters Guild Dungeon",
+        "Busan A-Rank Dungeon",
+        "Insects Dungeon",
+        "Goblins Dungeon",
+        "D-Rank Dungeon",
+        "Gwanak Mountain Dungeon",
+        "Hapjeong Subway Station Dungeon"
+    };
+    int name_count = sizeof(dungeon_names) / sizeof(dungeon_names[0]);
+
+    struct Dungeon d;
+    strcpy(d.name, dungeon_names[rand() % name_count]);
+    d.min_level = rand() % 5 + 1;
+    d.atk = rand() % 51 + 100;
+    d.hp = rand() % 51 + 50;
+    d.def = rand() % 26 + 25;
+    d.exp = rand() % 151 + 150;
+    d.shm_key = ftok("/tmp", rand() % 100 + 1);
+
+    sys_data->dungeons[sys_data->num_dungeons++] = d;
+
+    printf("Generated Dungeon: %s Lv%d (EXP %d ATK %d HP %d DEF %d)\n",
+           d.name, d.min_level, d.exp, d.atk, d.hp, d.def);
+}
+```
+Melakukan randomize nama yang tersimpan dalam char dungeon_names[] dan menjadikannya nama dungeon, lalu melakukan randomized sesuai kriteria yang telah ditentukan, jika sudah maka akan dimasukkan dalam data system serta mengoutput detail dungeon yang telah digenerate    
+
+#### E.
+```c
+void show_all_dungeons(struct SystemData *sys_data) {
+    printf("\n==== Dungeon List ====\n");
+    for (int i = 0; i < sys_data->num_dungeons; i++) {
+        struct Dungeon *d = &sys_data->dungeons[i];
+        printf("[%d] %s | Min Lv: %d | EXP:%d ATK:%d HP:%d DEF:%d | key: %d\n",
+            i+1, d->name, d->min_level, d->exp, d->atk, d->hp, d->def, d->shm_key);
+    }
+}
+```
+Melakukan print semua dungeon yang ada dalam data system dengan menggunakan for loop sampai sebelum counter dungeon dalam data sistem
+
+#### F.
+```c
+void show_available_dungeons(struct SystemData *sys_data, struct Hunter *user) {
+    for (int i = 0; i < sys_data->num_dungeons; i++) {
+        struct Dungeon *d = &sys_data->dungeons[i];
+        if (user->level >= d->min_level) {
+            printf("[%d] %s (Lv%d) => EXP:%d ATK:%d HP:%d DEF:%d\n",
+                i , d->name, d->min_level, d->exp, d->atk, d->hp, d->def);
+        }
+    }
+}
+```
+Akan melakukan for loops hingga kurang dari jumlah dungeon yang ada dan jika level user lebih dari atau sama dengan minimum level dungeon, maka akan mengoutput detail dungeon
+
+
+#### I.
+```c
+void setBanStatus(struct SystemData *sys_data, const char *username) {
+    for (int i = 0; i < sys_data->num_hunters; i++) {
+        if (strcmp(sys_data->hunters[i].username, username) == 0) {
+            if (sys_data->hunters[i].banned = 1){
+                sys_data->hunters[i].banned = 0;
+                printf("%s is now unbanned\n", username);
+                return;
+            }
+            sys_data->hunters[i].banned = 1;
+            printf("%s is now banned\n", username);
+            return;
+        }
+    }
+    printf("Hunter not found\n");
+}
+```
+Melakukan pengecheckan apakah ada username tersebut dalam data sistem, jika tidak ada akan print hunter tidak ditemukan. Jika ada maka akan melakukan cek lagi, jika ban pada user tersebut true (1) maka akan diubah jadi 0 atau diunban, namun sebaliknya, jika ban pada user 0 maka akan diubah jadi 1 atau true. Dimana pada sisi hunter.c, hunter tidak akan bisa mengakses fitur raid dan battle.
+#### L.
+```c
+void cleanAllMemory(struct SystemData *sys_data) {
+    for (int i = 0; i < sys_data->num_dungeons; i++) {
+        int id = shmget(sys_data->dungeons[i].shm_key, sizeof(struct Dungeon), 0666);
+        if (id != -1) shmctl(id, IPC_RMID, NULL);
+    }
+    for (int i = 0; i < sys_data->num_hunters; i++) {
+        int id = shmget(sys_data->hunters[i].shm_key, sizeof(struct Hunter), 0666);
+        if (id != -1) shmctl(id, IPC_RMID, NULL);
+    }
+    int sys_id = shmget(get_system_key(), sizeof(struct SystemData), 0666);
+    if (sys_id != -1) shmctl(sys_id, IPC_RMID, NULL);
+    printf("All shared memory segments removed.\n");
+}
+```
+Melakukan clear memory, dimana fungsi ini akan dipanggil pada saat dilakukan exit (keluar dari infinity loop menu) pada int main()/
