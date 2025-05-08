@@ -23,8 +23,8 @@
 ### Handy Inventory
 ### Enemy Encounter
 ### Other Battle Logic
-## Health & Rewards
-## Damage Equation
-## Passive
+#### Health & Rewards
+#### Damage Equation
+#### Passive
 ### Error Handling
 ### Nomor 4 (Rayka)
