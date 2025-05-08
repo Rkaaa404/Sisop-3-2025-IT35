@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#define PORT 8080
+#define MAX_INV 10
 
 typedef struct {
     char name[50];
@@ -18,8 +20,9 @@ typedef struct {
 typedef struct {
     int gold;
     Weapon weapon;
-    Weapon inv[10];
+    Weapon inv[MAX_INV];
     int kills;
+    int invCount;
 } Player;
 
 typedef struct {
@@ -28,20 +31,17 @@ typedef struct {
     int gold;
 } Enemy;
 
-#include "shop.h"
+#include "shop.h" // disini soalnya struct weapon sama player biar terdefinisi dulu
 
-void *handle_client(void *arg);
-void show_player_stats(Player *player, int client_sock);
-void display_shop(int client_sock);
-void display_inv(int client_sock, Player *player);
-void battle_mode(Player *player, int client_sock);
-Enemy generate_enemy();
-int calculate_damage(Player *player, int *is_critical);
-
-#define PORT 8080
+void *handleClient(void *arg);  // ubah deklarasi
+void showStats(Player *player, int client_sock);
+void displayInventories(Player *player, int client_sock);
+void battleMode(Player *player, int client_sock);
+Enemy generateEnemy();
+int calculateDamage(Player *player, int *isCritical);
 
 int main() {
-    int server_fd, new_socket;
+    int server_fd;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
 
@@ -87,7 +87,7 @@ int main() {
         *client_sock_ptr = new_socket;
 
         pthread_t tid;
-        if (pthread_create(&tid, NULL, handle_client, (void *)client_sock_ptr) != 0) {
+        if (pthread_create(&tid, NULL, handleClient, (void *)client_sock_ptr) != 0) {
             perror("Thread creation failed");
             close(new_socket);
             free(client_sock_ptr);
@@ -100,270 +100,225 @@ int main() {
     return 0;
 }
 
-void *handle_client(void *arg) {
+void *handleClient(void *arg) {
     int client_sock = *((int *)arg);
-    free(arg);
-    Player player = {200, {"Fist", 0, 5, 1, 0, ""}, {{"", 0, 0, 0, 0, ""}}, 0};
+    free(arg);  // bebaskan memori setelah digunakan
+    char buffer[2048];
+
+    // inisiasi stats client
+    Player player = {200, {"Fist", 0, 50, 1, 0, ""}, {}, 0, 1};
     player.inv[0] = player.weapon;
     player.inv[0].bought = 1;
 
     while (1) {
-        char buffer[1024];
-        int choice;
-
-        snprintf(buffer, sizeof(buffer), "\n====Welcome to the Dungeon!====\n"
-                                         "1. Show Player Stats\n"
-                                         "2. Visit Shop (Buy Weapon)\n"
-                                         "3. View Inventories and Pick Weapon\n"
-                                         "4. Battle Mode\n"
-                                         "5. Exit\n"
-                                         "\033[0;32mChoose an option: \033[0m");
+        snprintf(buffer, sizeof(buffer), "\n==== Welcome to the Dungeon! ====\n"
+                                     "1. Show Player Stats\n"
+                                     "2. Visit Shop (Buy Weapon)\n"
+                                     "3. View Inventories and Pick Weapon\n"
+                                     "4. Battle Mode\n"
+                                     "5. Exit\n"
+                                     "\033[0;32mChoose an option: \033[0m");
         send(client_sock, buffer, strlen(buffer), 0);
-
-        ssize_t bytes_received = recv(client_sock, &choice, sizeof(int), 0);
-        if (bytes_received <= 0) {
-            printf("Client disconnected.\n");
+        memset(buffer, 0, sizeof(buffer));
+        if (recv(client_sock, buffer, sizeof(buffer), 0) <= 0) {
             close(client_sock);
             pthread_exit(NULL);
         }
 
-        switch (choice) {
-            case 1:
-                show_player_stats(&player, client_sock);
-                break;
-            case 2: {
-                display_shop(client_sock);
-                int weapon_choice;
-                bytes_received = recv(client_sock, &weapon_choice, sizeof(int), 0);
-                 if (bytes_received <= 0) {
-                    printf("Client disconnected.\n");
-                    close(client_sock);
-                    pthread_exit(NULL);
-                }
-                buy_weapon(&player, weapon_choice - 1, client_sock);
-                break;
-            }
-            case 3: {
-                display_inv(client_sock, &player);
-                int inv_choice;
-                bytes_received = recv(client_sock, &inv_choice, sizeof(int), 0);
-                 if (bytes_received <= 0) {
-                    printf("Client disconnected.\n");
-                    close(client_sock);
-                    pthread_exit(NULL);
-                }
-                if (inv_choice >= 0 && inv_choice < 10 && player.inv[inv_choice].bought == 1) {
-                    player.weapon = player.inv[inv_choice];
-                    snprintf(buffer, sizeof(buffer), "\033[0;32mYou equipped %s!\033[0m\n", player.weapon.name);
-                } else {
-                    snprintf(buffer, sizeof(buffer), "\033[0;31mInvalid inventory choice.\033[0m\n");
-                }
-                send(client_sock, buffer, strlen(buffer), 0);
-                break;
-            }
-            case 4:
-                battle_mode(&player, client_sock);
-                break;
-            case 5:
-                snprintf(buffer, sizeof(buffer), "\033[0;31mDisconnecting...\033[0m\n");
-                send(client_sock, buffer, strlen(buffer), 0);
-                close(client_sock);
-                pthread_exit(NULL);
-            default:
-                snprintf(buffer, sizeof(buffer), "\033[0;31mInvalid choice. Try again.\033[0m\n");
-                send(client_sock, buffer, strlen(buffer), 0);
-                break;
-        }
-    }
-}
-
-void show_player_stats(Player *player, int client_sock) {
-    char buffer[1024];
-    if (player->weapon.boolPassive == 1 && player->weapon.passive[0] != '\0'){
-        snprintf(buffer, sizeof(buffer), "\n====Player Stats:====\n \033[0;33mGold:\033[33m %d | \033[0;34mWeapon:\033[34m %s | \033[0;31mBase Damage:\033[0m %d | Kills: %d | Passive: %s \n", player->gold, player->weapon.name, player->weapon.damage, player->kills, player->weapon.passive);
-    } else {
-        snprintf(buffer, sizeof(buffer), "\n====Player Stats:====\n \033[0;33mGold:\033[33m %d | \033[0;34mWeapon:\033[34m %s | \033[0;31mBase Damage:\033[0m %d | Kills: %d \n", player->gold, player->weapon.name, player->weapon.damage, player->kills);
-    }
-    send(client_sock, buffer, strlen(buffer), 0);
-}
-
-void display_shop(int client_sock) {
-    char buffer[1024] = "\n====Weapon Shop:====\n";
-    for (int i = 0; i < shop_size; i++) {
-        if (shop[i].boolPassive == 1 && shop[i].passive[0] != '\0'){
-            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "[ %d ] %s - \033[0;33mPrice:\033[33m %d, \033[0;31mDamage:\033[0m %d  (Passive: %s) \n", i+1, shop[i].name, shop[i].price, shop[i].damage, shop[i].passive);
+        // Proses pilihan
+        if (strncmp(buffer, "1", 1) == 0) {
+            showStats(&player, client_sock);
+            continue;
+        } else if (strncmp(buffer, "2", 1) == 0) {
+            displayShop(client_sock);
+            buyWeapon(&player, client_sock);
+            continue;
+        } else if (strncmp(buffer, "3", 1) == 0) {
+            displayInventories(&player, client_sock);
+            continue;
+        } else if (strncmp(buffer, "4", 1) == 0) {
+            battleMode(&player, client_sock);
+            continue;
+        } else if (strncmp(buffer, "5", 1) == 0) {
+            snprintf(buffer, sizeof(buffer), "\033[0;32mExiting... Goodbye!\033[0m");
+            send(client_sock, buffer, strlen(buffer), 0);
+            close(client_sock);
+            return NULL;
         } else {
-            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "[ %d ] %s - \033[0;33mPrice:\033[33m %d, \033[0;31mDamage:\033[0m %d \n", i+1, shop[i].name, shop[i].price, shop[i].damage);
+            snprintf(buffer, sizeof(buffer), "\033[0;32mInvalid option. Please choose again. \033[0m");
+            send(client_sock, buffer, strlen(buffer), 0);
         }
     }
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "\033[0;32mChoose weapon number to buy: \033[0m");
+}
+
+void showStats(Player *player, int client_sock) {
+    char buffer[1024];
+    if (player->weapon.boolPassive == 1){
+        snprintf(buffer, sizeof(buffer), "\n==== Player Stats ====\n \033[0;33mGold:\033[0m %d | \033[0;34mWeapon:\033[0m %s | \033[0;31mBase Damage:\033[0m %d | \033[0;31mKills:\033[0m %d | \033[0;34mPassive:\033[0m %s \n", player->gold, player->weapon.name, player->weapon.damage, player->kills, player->weapon.passive);
+    } else {
+        snprintf(buffer, sizeof(buffer), "\n==== Player Stats ====\n \033[0;33mGold:\033[0m %d | \033[0;34mWeapon:\033[0m %s | \033[0;31mBase Damage:\033[0m %d | \033[0;31mKills:\033[0m %d \n", player->gold, player->weapon.name, player->weapon.damage, player->kills);
+    }
     send(client_sock, buffer, strlen(buffer), 0);
 }
 
-void display_inv(int client_sock, Player *player){
-    char buffer[1024] = "\n====Inventory====:\n";
-    int items_in_inv = 0;
-    for (int i = 0; i < 10; i++) {
-        if (player->inv[i].bought == 1){
-            items_in_inv++;
-            if (player->inv[i].boolPassive == 1 && player->inv[i].passive[0] != '\0'){
-                if (strcmp(player->inv[i].name, player->weapon.name) == 0){
-                    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "\033[0;32m[ %d ] %s (%s) (EQUIPPED)\033[0m\n", i, player->inv[i].name, player->inv[i].passive);
-                }else {
-                    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "[ %d ] %s (%s) \n", i, player->inv[i].name, player->inv[i].passive);
-                }
+void displayInventories(Player *player, int client_sock) {
+    char buffer[2048] = {0};
+    snprintf(buffer, sizeof(buffer), "\n==== Player's Inventory ====\n");
+    for (int i = 0; i < player->invCount; i++) {
+        if (player->inv[i].boolPassive) {
+            if (strcmp(player->inv[i].name, player->weapon.name) == 0) {
+                snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
+                         "[ %d ] %s - \033[0;31mDamage:\033[0m %d \033[0;34m(Passive: %s)\033[0m \033[0;32m(EQUIPPED)\033[0m\n",
+                         i, player->inv[i].name, player->inv[i].damage, player->inv[i].passive);
             } else {
-                if (strcmp(player->inv[i].name, player->weapon.name) == 0){
-                    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "\033[0;32m[ %d ] %s (EQUIPPED) \033[0m\n", i, player->inv[i].name);
-                }else{
-                    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "[ %d ] %s \n", i, player->inv[i].name);
-                }
+                snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
+                         "[ %d ] %s - \033[0;31mDamage:\033[0m %d \033[0;34m(Passive: %s)\033[0m\n",
+                         i, player->inv[i].name, player->inv[i].damage, player->inv[i].passive);
+            }
+        } else {
+            if (strcmp(player->inv[i].name, player->weapon.name) == 0) {
+                snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
+                         "[ %d ] %s - \033[0;31mDamage:\033[0m %d \033[0;32m(EQUIPPED)\033[0m\n",
+                         i, player->inv[i].name, player->inv[i].damage);
+            } else {
+                snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
+                         "[ %d ] %s - \033[0;31mDamage:\033[0m %d\n",
+                         i, player->inv[i].name, player->inv[i].damage);
             }
         }
-    }
-    if (items_in_inv == 0) {
-        snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "Inventory is empty.\n");
     }
     snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "\033[0;32mChoose weapon number to use: \033[0m");
     send(client_sock, buffer, strlen(buffer), 0);
+
+    memset(buffer, 0, sizeof(buffer));
+    if (recv(client_sock, buffer, sizeof(buffer), 0) <= 0) {
+        close(client_sock);
+        pthread_exit(NULL); // atau return NULL
+    }
+
+    int choice = atoi(buffer);
+    if ((choice > player->invCount - 1) || (choice < 0)){
+        snprintf(buffer, sizeof(buffer), "\033[0;31mYou don't have that dude...\033[0m");
+        send(client_sock, buffer, strlen(buffer), 0);
+        return;
+    } else {
+        player->weapon = player->inv[choice];
+    }
 }
 
-Enemy generate_enemy() {
+Enemy generateEnemy() {
     Enemy new_enemy;
-    new_enemy.max_health = rand() % 151 + 50;
-    new_enemy.health = new_enemy.max_health;
-    new_enemy.gold = rand() % 51 + 20;
+    new_enemy.max_health = rand() % 151 + 50; // random 50-200 HP
+    new_enemy.health = new_enemy.max_health; // buat track nyawa
+    new_enemy.gold = rand() % 151 + 50; // random 50-200 gold reward
     return new_enemy;
 }
 
-int calculate_damage(Player *player, int *is_critical) {
-    int base_damage = player->weapon.damage;
-    int random_variation = (rand() % (base_damage / 5 + 1)) - (base_damage / 10);
-    int damage_dealt = base_damage + random_variation;
-
-    if (damage_dealt < 1) {
-        damage_dealt = 1;
+int calculateDamage(Player *player, int *isCritical){
+    int x = rand() % 5 + 1;
+    int baseDamage = player->weapon.damage;
+    int randomizedDamage = (baseDamage / x) - rand() % 5;
+    int damageDealt = baseDamage + randomizedDamage;
+    if (damageDealt <= 3) damageDealt = 3;
+    
+    // crit chance
+    int y;
+    if (strcmp(player->weapon.name, shop[4].name) == 0) {
+        y = rand() % 2; // 0-1, 50% crit chance
+    } else {
+        y = rand() % 5; // 0-4, 20% crit chance
+    }
+    
+    if (y == 1) {
+        *isCritical = 1;
+        return damageDealt * 2;
     }
 
-    *is_critical = 0;
-
-    if ((rand() % 100) < 10) {
-        *is_critical = 1;
-    }
-
-    if (player->weapon.boolPassive == 1) {
-        if (strcmp(player->weapon.name, "Random Stick") == 0) {
-            if ((rand() % 100) < 5) {
-                damage_dealt += 1;
-            }
-        } else if (strcmp(player->weapon.name, "Berserker Fury") == 0) {
-            if ((rand() % 100) < 30) {
-                *is_critical = 1;
-            }
-        }
-    }
-
-    if (*is_critical) {
-        damage_dealt *= 2;
-    }
-
-    return damage_dealt;
+    *isCritical = 0; 
+    return damageDealt;
 }
 
-void battle_mode(Player *player, int client_sock) {
+void battleMode(Player *player, int client_sock){ 
     char buffer[2048];
-    Enemy current_enemy = generate_enemy();
-    int in_battle = 1;
-
-    snprintf(buffer, sizeof(buffer), "\n====Battle Mode====\nAn enemy approaches!\n");
+    Enemy currentEnemy = generateEnemy();
+    snprintf(buffer, sizeof(buffer), "\n==== Battle Started ====\nAn enemy approaches!\n");
     send(client_sock, buffer, strlen(buffer), 0);
 
-    while (in_battle) {
-        int health_bar_length = 20;
-        int filled_length = (int)(((float)current_enemy.health / current_enemy.max_health) * health_bar_length);
-        if (filled_length < 0) filled_length = 0;
+    while (1){
+        memset(buffer, 0, sizeof(buffer));
 
-        snprintf(buffer, sizeof(buffer), "\nEnemy Health: [");
-        for (int i = 0; i < health_bar_length; i++) {
-            if (i < filled_length) {
-                strcat(buffer, "\033[0;31m#\033[0m");
-            } else {
-                strcat(buffer, "-");
+        if (currentEnemy.health > 0){
+            int health_bar_length = 20;
+            int filled_length = (int)(((float)currentEnemy.health / currentEnemy.max_health) * health_bar_length);
+            if (filled_length < 0) filled_length = 0;
+
+            snprintf(buffer, sizeof(buffer), "\nEnemy Health: [");
+            for (int i = 0; i < health_bar_length; i++) {
+                if (i < filled_length) {
+                    strcat(buffer, "\033[0;31m#\033[0m");
+                } else {
+                    strcat(buffer, " ");
+                }
             }
+            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "] (%d/%d)\n", currentEnemy.health < 0 ? 0 : currentEnemy.health, currentEnemy.max_health);
+            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "Type \033[0;31m'attack'\033[0m to attack or \033[0;32m'exit'\033[0m to leave the battle \n");
+            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "\n > ");
+            send(client_sock, buffer, strlen(buffer), 0);
         }
-        snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "] (%d/%d)\n", current_enemy.health < 0 ? 0 : current_enemy.health, current_enemy.max_health);
-        snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "Options: attack | exit\n");
-        send(client_sock, buffer, strlen(buffer), 0);
 
-        char action[50];
-        ssize_t bytes_received = recv(client_sock, action, sizeof(action) - 1, 0);
-        if (bytes_received <= 0) {
-             printf("Client disconnected during battle.\n");
+        memset(buffer, 0, sizeof(buffer));
+        if (recv(client_sock, buffer, sizeof(buffer), 0) <= 0) {
             close(client_sock);
-            pthread_exit(NULL);
+            pthread_exit(NULL); // atau return NULL
         }
-        action[bytes_received] = '\0';
-        action[strcspn(action, "\n")] = 0;
+        
+        if (strncmp(buffer, "attack", 6) == 0){
+            memset(buffer, 0, sizeof(buffer));
+            int isCritical = 0;
+            int turnDamage = calculateDamage(player, &isCritical);
 
-        if (strcmp(action, "attack") == 0) {
-
-            if (player->weapon.boolPassive == 1) {
-                 if (strcmp(player->weapon.name, "Random Stick") == 0) {
-                     if ((rand() % 100) < 5) {
-                        snprintf(buffer, sizeof(buffer), "\n====Passive Active====\nRandom Stick: +1 Damage\n");
-                        send(client_sock, buffer, strlen(buffer), 0);
-                     }
-                 } else if (strcmp(player->weapon.name, "Berserker Fury") == 0) {
-                     if ((rand() % 100) < 30) {
-                        snprintf(buffer, sizeof(buffer), "\n====Passive Active====\nBerserker Fury: +30%% Crit Chance activated!\n");
-                        send(client_sock, buffer, strlen(buffer), 0);
-                     }
-                 }
+            if (strcmp(player->weapon.name, shop[4].name) == 0){
+                snprintf(buffer, sizeof(buffer), "\n\033[0;34m==== Passive Activated ==== \nBerserker Fury increased the crit chance by 30%%...\033[0m \n");
+                send(client_sock, buffer, strlen(buffer), 0);
+                memset(buffer, 0, sizeof(buffer));
             }
 
-            int is_critical = 0;
-            int damage_dealt = calculate_damage(player, &is_critical);
-
-            snprintf(buffer, sizeof(buffer), "You attack the enemy!\n");
+            if (isCritical){
+                snprintf(buffer, sizeof(buffer), "\n==== Critical Hit! ====\nYou dealt \033[0;31m%d\033[0m damage!\n", turnDamage);
+            } else {
+                snprintf(buffer, sizeof(buffer), "\nYou dealt \033[0;31m%d\033[0m damage!\n", turnDamage);
+            }
             send(client_sock, buffer, strlen(buffer), 0);
-            usleep(500000);
 
-            if (is_critical) {
-                snprintf(buffer, sizeof(buffer), "\033[0;33mCritical Hit!\033[0m\n");
+            currentEnemy.health -= turnDamage;
+
+            int healthPercentage = currentEnemy.health * 100 / currentEnemy.max_health;
+
+            if ((strcmp(player->weapon.name, shop[0].name) == 0) && (healthPercentage <= 10)){
+                currentEnemy.health = 0;
+                snprintf(buffer, sizeof(buffer), "\n\033[0;34m==== Passive Activated ==== \nRandom Stick just did an auto kill, well that's great...\033[0m \n");
                 send(client_sock, buffer, strlen(buffer), 0);
-                usleep(500000);
             }
 
-            snprintf(buffer, sizeof(buffer), "You dealt %d damage!\n", damage_dealt);
-            send(client_sock, buffer, strlen(buffer), 0);
-            usleep(500000);
-
-            current_enemy.health -= damage_dealt;
-
-            if (current_enemy.health <= 0) {
-                snprintf(buffer, sizeof(buffer), "\nEnemy defeated!\n");
+            if (currentEnemy.health <= 0){
+                snprintf(buffer, sizeof(buffer), "\n\033[0;31mEnemy defeated!\033[0m \n");
                 send(client_sock, buffer, strlen(buffer), 0);
-                usleep(500000);
 
-                player->gold += current_enemy.gold;
+                player->gold += currentEnemy.gold;
                 player->kills++;
-                snprintf(buffer, sizeof(buffer), "You received %d gold and %d kill!\n", current_enemy.gold, 1);
-                send(client_sock, buffer, strlen(buffer), 0);
-                usleep(500000);
 
-                current_enemy = generate_enemy();
-                snprintf(buffer, sizeof(buffer), "\nA new enemy appears!\n");
+                snprintf(buffer, sizeof(buffer), "\n\033[0;34m====\033[0m \033[0;33mReward\033[0m \033[0;34m====\033[0m\n You received \033[0;33m%d\033[0m gold!\n", currentEnemy.gold);
                 send(client_sock, buffer, strlen(buffer), 0);
-                usleep(500000);
 
+                currentEnemy = generateEnemy();
+                snprintf(buffer, sizeof(buffer), "\n\033[0;34mA new enemy appears!\033[0m \n");
+                send(client_sock, buffer, strlen(buffer), 0);
+                continue;
             }
-
-        } else if (strcmp(action, "exit") == 0) {
-            snprintf(buffer, sizeof(buffer), "Exiting Battle Mode.\n");
-            send(client_sock, buffer, strlen(buffer), 0);
-            in_battle = 0;
+        } else if (strncmp(buffer, "exit", 4) == 0) {
+            break;
         } else {
-            snprintf(buffer, sizeof(buffer), "\033[0;31mInvalid action. Choose 'attack' or 'exit'.\033[0m\n");
+            snprintf(buffer, sizeof(buffer), "\033[0;31mThat's not an option sir\033[0m\n");
             send(client_sock, buffer, strlen(buffer), 0);
         }
     }
